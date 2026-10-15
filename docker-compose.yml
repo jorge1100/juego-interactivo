@@ -1,0 +1,192 @@
+services:
+
+  mariadb:
+    image: mariadb:11
+    container_name: emisor-reseptor_mariadb
+    restart: unless-stopped
+
+    environment:
+      MYSQL_ROOT_PASSWORD: 123456789
+      MYSQL_DATABASE: emisor-reseptor-db
+      MYSQL_USER: jorge
+      MYSQL_PASSWORD: 123456789
+
+    volumes:
+      - mariadb_data:/var/lib/mysql
+
+    healthcheck:
+      test: ["CMD", "mariadb-admin", "ping", "-h", "localhost", "-ujorge", "-p123456789"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+    networks:
+      - backend
+
+  mongodb:
+    image: mongo:8
+    container_name: emisor-reseptor_mongodb
+    restart: unless-stopped
+
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: jorge
+      MONGO_INITDB_ROOT_PASSWORD: 123456789
+
+    volumes:
+      - mongodb_data:/data/db
+
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "-u", "jorge", "-p", "123456789", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+    networks:
+      - backend
+
+  php:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+
+    container_name: emisor-reseptor_php
+
+    restart: unless-stopped
+
+    working_dir: /var/www/html
+
+    volumes:
+      - ./app:/var/www/html
+
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+
+    networks:
+      - backend
+
+  nginx:
+    image: nginx:alpine
+
+    container_name: emisor-reseptor_nginx
+
+    restart: unless-stopped
+
+    ports:
+      - "8343:80"
+
+    volumes:
+      - ./app:/var/www/html:ro
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+
+    depends_on:
+      - php
+
+    networks:
+      - backend
+
+  reverb:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+
+    container_name: emisor-reseptor_reverb
+
+    restart: unless-stopped
+
+    working_dir: /var/www/html
+
+    volumes:
+      - ./app:/var/www/html
+
+    command: ["php", "artisan", "reverb:start", "--host=0.0.0.0", "--port=8080"]
+
+    ports:
+      - "8080:8080"
+
+    depends_on:
+      - php
+
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/127.0.0.1/8080'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+    networks:
+      - backend
+
+  queue:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+
+    container_name: emisor-reseptor_queue
+
+    restart: unless-stopped
+
+    working_dir: /var/www/html
+
+    volumes:
+      - ./app:/var/www/html
+
+    command: ["php", "artisan", "queue:work", "--sleep=3", "--tries=3", "--max-time=3600"]
+
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      reverb:
+        condition: service_started
+
+    networks:
+      - backend
+
+  adminer:
+    image: adminer
+
+    container_name: emisor-reseptor_adminer
+
+    restart: unless-stopped
+
+    ports:
+      - "5436:8080"
+
+    networks:
+      - backend
+
+  mongo-express:
+    image: mongo-express
+
+    container_name: emisor-reseptor_mongoexpress
+
+    restart: unless-stopped
+
+    ports:
+      - "5323:8081"
+
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: jorge
+      ME_CONFIG_MONGODB_ADMINPASSWORD: 123456789
+      ME_CONFIG_MONGODB_SERVER: mongodb
+      ME_CONFIG_BASICAUTH: true
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: admin123
+
+    depends_on:
+      - mongodb
+
+    networks:
+      - backend
+
+volumes:
+  mariadb_data:
+  mongodb_data:
+
+networks:
+  backend:
+    driver: bridge
